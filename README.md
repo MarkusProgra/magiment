@@ -4,7 +4,7 @@ A layer of iron filings for your screen. Open on a phone,
 hold a magnet against or near the device, and the field of black dots
 pulls toward it. Remove the magnet and the layer settles back into a
 uniform grain.
-
+ 
 **How it works**
 
 - A jittered grid of canvas dots forms a homogeneous layer on white.
