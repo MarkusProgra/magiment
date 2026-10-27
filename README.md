@@ -28,3 +28,5 @@ python3 -m http.server 8000   # Generic Sensor APIs need https, or localhost
 ```
 
 **Deploy** — GitHub Pages: deploy from the `main` branch, root.
+
+**Credits** — © Markus · [@mkshoff](https://www.instagram.com/mkshoff/)
