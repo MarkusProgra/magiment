@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>magiment</title>
+<meta name="description" content="A field of dots that obeys your magnet.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='9' fill='black'/%3E%3C/svg%3E">
+<style>
+  :root { --ink:#000; --paper:#fff; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { height:100%; background:var(--paper); color:var(--ink);
+    font-family:ui-sans-serif,-apple-system,"Helvetica Neue",sans-serif; overflow:hidden; }
+  canvas { position:fixed; inset:0; width:100%; height:100%; touch-action:none; }
+  .gate { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center;
+    justify-content:center; gap:14px; text-align:center; padding:24px; z-index:5; cursor:pointer; }
+  .gate h1 { font-size:clamp(34px,9vw,64px); font-weight:800; letter-spacing:.22em; }
+  .gate p  { font-size:15px; line-height:1.5; max-width:34ch; opacity:.62; }
+  .gate .go { margin-top:18px; padding:14px 34px; border:2px solid var(--ink); border-radius:999px;
+    font-size:13px; font-weight:700; letter-spacing:.18em; text-transform:uppercase; }
+  .gate.hidden { display:none; }
+  .status { position:fixed; left:14px; bottom:14px; z-index:4;
+    font:600 11px/1.4 ui-monospace,monospace; opacity:.45; pointer-events:none; white-space:pre; }
+  .desk { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center;
+    justify-content:center; gap:22px; text-align:center; z-index:5;
+    background:var(--paper); color:var(--ink); }
+  .desk h1 { font-size:clamp(30px,5vw,52px); font-weight:800; letter-spacing:.24em; }
+  .desk p  { font-size:15px; opacity:.6; max-width:40ch; line-height:1.5; }
+  #qr { padding:22px; border:2px solid var(--ink); border-radius:16px; background:#fff; }
+  .desk small { letter-spacing:.16em; text-transform:uppercase; font-weight:700; opacity:.35; font-size:11px; }
+</style>
+</head>
+<body>
+
+<canvas id="cv"></canvas>
+
+<div class="gate" id="gate">
+  <h1>MAGIMENT</h1>
+  <p id="gateMsg">A layer of iron filings for your screen.<br>Hold a magnet near your phone and watch them move.</p>
+  <div class="go" id="goBtn">Tap to begin</div>
+</div>
+
+<div class="status" id="status"></div>
+
+<div class="desk" id="desk">
+  <h1>magiment</h1>
+  <div id="qr"></div>
+  <p><strong>Scan to open on your phone.</strong><br>
+  The dots respond to a real magnetic field — that takes the compass inside a phone, so head there with this.</p>
+  <small>point your camera at the code</small>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script>
+(() => {
+  const canvas = document.getElementById('cv'),
+        ctx    = canvas.getContext('2d'),
+        desk   = document.getElementById('desk'),
+        gate   = document.getElementById('gate'),
+        statusEl = document.getElementById('status');
+  const isTouch = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+
+  let W = 0, H = 0, DPR = 1, dots = [], homes = [];
+  let field = { x: 0, y: 0, s: 0 }, base = null, sensorReady = false;
+  let mouseMag = null; // virtual magnet (fallback + desktop preview)
+
+  function resize() {
+    DPR = Math.min(devicePixelRatio || 1, 2);
+    W = innerWidth; H = innerHeight;
+    canvas.width = W * DPR; canvas.height = H * DPR;
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    seed(true);
+  }
+
+  function seed(keepPositions) {
+    const n = Math.round((W * H) / 2100);
+    dots = []; homes = [];
+    // jittered grid -> homogeneous layer
+    const cols = Math.ceil(Math.sqrt(n * W / H)),
+          rows = Math.ceil(n / cols);
+    for (let r = 0; r < rows; r++)
+      for (let c = 0; c < cols; c++) {
+        const hx = (c + 0.5) * (W / cols) + (Math.random() - .5) * (W / cols) * .55,
+              hy = (r + 0.5) * (H / rows) + (Math.random() - .5) * (H / rows) * .55;
+        homes.push({ x: hx, y: hy });
+        dots.push({ x: hx + (Math.random()-.5)*4, y: hy + (Math.random()-.5)*4, vx: 0, vy: 0 });
+      }
+  }
+
+  // ---------- magnetometer ----------
+  function fieldToScreen(bx, by) {
+    let a = 0;
+    try { a = (screen.orientation && screen.orientation.angle) || (typeof window.orientation === 'number' ? window.orientation : 0) || 0; } catch (e) {}
+    const t = a * Math.PI / 180, c = Math.cos(t), s = Math.sin(t);
+    return { x: bx * c - by * s, y: bx * s + by * c };
+  }
+
+  function startSensor() {
+    if (!('Magnetometer' in window)) return Promise.reject('no-api');
+    return new Promise((res, rej) => {
+      let duds = 0;
+      try {
+        const m = new Magnetometer({ frequency: 60 });
+        m.addEventListener('reading', () => {
+          sensorReady = true;
+          if (!base) base = { x: m.x, y: m.y }; // rough baseline; refined below
+          base.x = base.x * .92 + m.x * .08; base.y = base.y * .92 + m.y * .08;
+          const f = fieldToScreen(m.x - base.x, m.y - base.y);
+          field.x = f.x; field.y = f.y;
+          field.s = Math.min(Math.hypot(f.x, f.y), 220);
+        });
+        m.addEventListener('error', e => rej(e.name || 'sensor-error'));
+        m.start(); res();
+      } catch (err) { rej(err); }
+    });
+  }
+
+  // ---------- pointer fallback / desktop ----------
+  function pointerMagnet() {
+    return mouseMag ? { x: mouseMag.x, y: mouseMag.y } : null;
+  }
+
+  addEventListener('pointerdown', e => { mouseMag = { x: e.clientX, y: e.clientY }; gate.classList.add('hidden'); });
+  addEventListener('pointermove', e => { if (mouseMag) mouseMag = { x: e.clientX, y: e.clientY }; });
+  addEventListener('pointerup',   () => { if (!sensorReady) mouseMag = null; });
+  addEventListener('pointercancel', () => { if (!sensorReady) mouseMag = null; });
+
+  // ---------- physics ----------
+  function step() {
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, W, H);
+    const mag = pointerMagnet(),
+          hasField = field.s > 6 && sensorReady,
+          cx = W / 2, cy = H / 2;
+    let tx = null, ty = null, power = 0;
+
+    if (hasField) {
+      // magnet anchor: direction of horizontal field, closeness from strength
+      const L = Math.hypot(W, H) * .38,
+            d = L * (1 - Math.min(field.s / 160, 1)),
+            u = field.s > 0 ? { x: field.x / field.s, y: field.y / field.s } : { x: 0, y: 0 };
+      tx = cx + u.x * d; ty = cy + u.y * d;
+      power = Math.min(field.s / 60, 1.6);
+    } else if (mag) {
+      tx = mag.x; ty = mag.y; power = 1.1;
+    }
+
+    for (let i = 0; i < dots.length; i++) {
+      const p = dots[i], h = homes[i];
+      if (tx !== null) {
+        const dx = tx - p.x, dy = ty - p.y, dist = Math.hypot(dx, dy) + 1;
+        const f = power * 210 / dist;    // near = strong pull
+        p.vx += (dx / dist) * f * Math.min(dist / 60, 1);
+        p.vy += (dy / dist) * f * Math.min(dist / 60, 1);
+      } else {
+        // relax back to the uniform layer
+        p.vx += (h.x - p.x) * .012; p.vy += (h.y - p.y) * .012;
+        p.vx += Math.random() - .5; p.vy += Math.random() - .5;
+      }
+      p.vx *= .90; p.vy *= .90;
+      p.x += Math.max(-14, Math.min(14, p.vx));
+      p.y += Math.max(-14, Math.min(14, p.vy));
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 2.1, 0, 6.2832);
+      ctx.fill();
+    }
+    const st = hasField
+      ? 'MAGNETIC FIELD  ' + field.s.toFixed(0) + ' uT'
+      : (sensorReady ? 'CALIBRATING' : (mag ? 'VIRTUAL MAGNET' : ''));
+    if (st) statusEl.textContent = st;
+  }
+
+  function loop() { step(); requestAnimationFrame(loop); }
+
+  // ---------- boot ----------
+  if (isTouch) {
+    desk.style.display = 'none';
+    document.getElementById('goBtn').addEventListener('click', async () => {
+      try { await startSensor(); } catch (e) {}
+      setTimeout(() => {
+        if (!sensorReady) document.getElementById('gateMsg').innerHTML =
+          'This browser doesn’t expose the compass to web apps.<br>' +
+          'Open <b>magiment</b> in Chrome on Android for the real thing — ' +
+          'or press and drag now to feel a virtual magnet.';
+        document.getElementById('goBtn').textContent = '';
+      }, 1600);
+    });
+  } else {
+    gate.style.display = 'none';
+    // QR -> this exact page without query/hash
+    const url = location.origin + location.pathname;
+    try {
+      new QRCode(document.getElementById('qr'), { text: url, width: 190, height: 190, correctLevel: QRCode.CorrectLevel.M });
+      const dots2 = document.getElementById('qr').querySelector('img');
+      if (dots2) dots2.style.display = 'block';
+    } catch (e) { document.getElementById('qr').textContent = url; }
+  }
+
+  addEventListener('resize', resize);
+  resize();
+  loop();
+})();
+</script>
+</body>
+</html>
