@@ -137,6 +137,7 @@
   function step() {
     ctx.fillStyle = '#fff';
     ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#000';
     const mag = pointerMagnet(),
           hasField = field.s > 6 && sensorReady,
           cx = W / 2, cy = H / 2;
